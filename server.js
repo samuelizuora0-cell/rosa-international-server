@@ -12,43 +12,44 @@ const PORT = process.env.PORT || 10000;
 const UPLOAD_DIR = path.resolve(__dirname, 'uploads');
 if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR);
 
-// ✅ CORS setup for InfinityFree frontend
+// ✅ CORS: Allow your InfinityFree frontend
 app.use(cors({
-  origin: 'https://rosainternationalschool.kesug.com', // InfinityFree site URL
-  methods: ['GET', 'POST', 'PUT', 'DELETE'],
-  credentials: true
+  origin: 'https://rosainternationalschool.kesug.com', // your InfinityFree URL
+  methods: ['GET', 'POST'],
+  credentials: true,
 }));
 
-// ✅ Body parsers
+// ✅ Middleware
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
-
-// ✅ Session setup
 app.use(session({
-  secret: process.env.SESSION_SECRET || 'rosa_international_secret_key',
+  secret: process.env.SESSION_SECRET || 'rosa_international_secret',
   resave: false,
   saveUninitialized: false,
-  cookie: { maxAge: 1000 * 60 * 60 } // 1 hour
+  cookie: { maxAge: 3600000 } // 1 hour
 }));
 
-// ✅ Static folders
+// ✅ Serve static files
 app.use('/uploads', express.static(UPLOAD_DIR));
-app.use(express.static(path.join(__dirname, 'public')));
 
-// ✅ MySQL Connection using Railway
-const DATABASE_URL = process.env.DATABASE_URL || 'mysql://root:TfEdRGUZlwebqUITwnpOBwXxSnusfjlI@crossover.proxy.rlwy.net:37027/railway';
-
+// ✅ MySQL connection pool
 let pool;
-try {
-  pool = mysql.createPool(DATABASE_URL);
-  console.log('✅ Connected to MySQL Database');
-} catch (err) {
-  console.error('❌ Database connection failed:', err.message);
-}
-
-// ✅ Ensure results table exists
 (async () => {
   try {
+    pool = await mysql.createPool({
+      host: process.env.DB_HOST || 'crossover.proxy.rlwy.net',
+      user: process.env.DB_USER || 'root',
+      password: process.env.DB_PASS || 'TfEdRGUZlwebqUITwnpOBwXxSnusfjlI',
+      database: process.env.DB_NAME || 'railway',
+      port: process.env.DB_PORT || 37027,
+      waitForConnections: true,
+      connectionLimit: 10,
+      queueLimit: 0,
+    });
+
+    console.log('✅ Connected to MySQL Database');
+
+    // 🛠️ Auto-create tables
     const conn = await pool.getConnection();
     await conn.query(`
       CREATE TABLE IF NOT EXISTS results (
@@ -60,14 +61,24 @@ try {
         upload_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       )
     `);
+
+    await conn.query(`
+      CREATE TABLE IF NOT EXISTS access_logs (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        action VARCHAR(255),
+        ip_address VARCHAR(255),
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+
     conn.release();
-    console.log("✅ 'results' table verified/created");
-  } catch (err) {
-    console.error('❌ Table setup failed:', err.message);
+    console.log('✅ Tables verified/created');
+  } catch (error) {
+    console.error('❌ Database connection failed:', error.message);
   }
 })();
 
-// ✅ File upload config
+// ✅ File upload setup
 const storage = multer.diskStorage({
   destination: (req, file, cb) => cb(null, UPLOAD_DIR),
   filename: (req, file, cb) => {
@@ -77,21 +88,17 @@ const storage = multer.diskStorage({
 });
 const upload = multer({ storage });
 
-// ==================== ROUTES ====================
-
-// 🔐 Admin Login
+// ✅ Admin login
 app.post('/api/admin/login', (req, res) => {
   const { username, password } = req.body;
-
   if (username === process.env.ADMIN_USER && password === process.env.ADMIN_PASS) {
     req.session.admin = true;
-    res.json({ success: true, message: 'Login successful' });
-  } else {
-    res.status(401).json({ success: false, message: 'Invalid credentials' });
+    return res.json({ success: true, message: 'Login successful' });
   }
+  res.status(401).json({ success: false, message: 'Invalid credentials' });
 });
 
-// 📤 Admin Upload Result
+// ✅ Admin upload result
 app.post('/api/admin/upload', upload.single('file'), async (req, res) => {
   if (!req.session.admin) {
     return res.status(403).json({ success: false, message: 'Unauthorized' });
@@ -103,11 +110,10 @@ app.post('/api/admin/upload', upload.single('file'), async (req, res) => {
   try {
     const conn = await pool.getConnection();
     await conn.query(
-      'INSERT INTO results (student_name, exam_number, pin, file_path) VALUES (?, ?, ?, ?)',
+      'INSERT INTO results (student_name, exam_number, pin, file_path, upload_date) VALUES (?, ?, ?, ?, NOW())',
       [student_name, exam_number, pin, filePath]
     );
     conn.release();
-
     res.json({ success: true, message: 'Result uploaded successfully' });
   } catch (error) {
     console.error('DB Error:', error);
@@ -115,7 +121,24 @@ app.post('/api/admin/upload', upload.single('file'), async (req, res) => {
   }
 });
 
-// 🎓 Student Verify Result
+// ✅ List results
+app.get('/api/admin/list', async (req, res) => {
+  if (!req.session.admin) {
+    return res.status(403).json({ success: false, message: 'Unauthorized' });
+  }
+
+  try {
+    const conn = await pool.getConnection();
+    const [rows] = await conn.query('SELECT * FROM results ORDER BY upload_date DESC LIMIT 20');
+    conn.release();
+    res.json({ success: true, data: rows });
+  } catch (error) {
+    console.error('DB Error:', error);
+    res.status(500).json({ success: false, message: 'Database error' });
+  }
+});
+
+// ✅ Student verify
 app.post('/api/student/verify', async (req, res) => {
   const { examNumber, pin } = req.body;
   try {
@@ -137,7 +160,13 @@ app.post('/api/student/verify', async (req, res) => {
   }
 });
 
-// ==================== START SERVER ====================
+// ✅ Logout
+app.post('/api/admin/logout', (req, res) => {
+  req.session.destroy();
+  res.json({ success: true, message: 'Logged out' });
+});
+
+// ✅ Start server
 app.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
 });
