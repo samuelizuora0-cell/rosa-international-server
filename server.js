@@ -14,9 +14,9 @@ if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR);
 
 const app = express();
 
-// ✅ Allow your InfinityFree site to connect
+// ✅ Allow your InfinityFree frontend to connect to Render backend
 app.use(cors({
-  origin: 'https://rosainternationalschool.kesug.com', // your exact InfinityFree URL, no "www"
+  origin: 'https://rosainternationalschool.kesug.com', // Your exact frontend URL
   methods: ['GET', 'POST', 'PUT', 'DELETE'],
   credentials: true
 }));
@@ -25,19 +25,24 @@ app.use(cors({
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-// ✅ Session setup
+// ✅ Session setup (important for login persistence)
 app.use(session({
   secret: process.env.SESSION_SECRET || 'change_this_secret',
   resave: false,
   saveUninitialized: false,
-  cookie: { maxAge: 1000 * 60 * 60 } // 1 hour
+  cookie: {
+    httpOnly: true,
+    secure: true,       // ✅ Render uses HTTPS
+    sameSite: 'none',   // ✅ Required for cross-domain cookie
+    maxAge: 1000 * 60 * 60 // 1 hour
+  }
 }));
 
-// ✅ Serve uploaded files and public assets
+// ✅ Serve uploaded files and static assets
 app.use('/uploads', express.static(UPLOAD_DIR));
 app.use(express.static(path.join(__dirname, 'public')));
 
-// ✅ Database connection
+// ✅ Database connection pool
 const pool = mysql.createPool({
   host: process.env.DB_HOST,
   user: process.env.DB_USER,
@@ -48,7 +53,7 @@ const pool = mysql.createPool({
   connectionLimit: 10
 });
 
-// ✅ File upload setup
+// ✅ File upload configuration
 const storage = multer.diskStorage({
   destination: (req, file, cb) => cb(null, UPLOAD_DIR),
   filename: (req, file, cb) => {
@@ -64,14 +69,38 @@ const upload = multer({ storage });
 app.post('/api/admin/login', async (req, res) => {
   const { username, password } = req.body;
 
-  if (
-    username === process.env.ADMIN_USER &&
-    password === process.env.ADMIN_PASS
-  ) {
+  if (username === process.env.ADMIN_USER && password === process.env.ADMIN_PASS) {
     req.session.admin = true;
     return res.json({ success: true, message: 'Login successful' });
   } else {
     return res.status(401).json({ success: false, message: 'Invalid credentials' });
+  }
+});
+
+// 🧑‍💻 Admin Logout
+app.post('/api/admin/logout', (req, res) => {
+  req.session.destroy(() => {
+    res.json({ success: true, message: 'Logged out successfully' });
+  });
+});
+
+// 🧾 Admin List Uploads
+app.get('/api/admin/list', async (req, res) => {
+  if (!req.session.admin) {
+    return res.status(403).json({ success: false, message: 'Unauthorized' });
+  }
+
+  try {
+    const conn = await pool.getConnection();
+    const [rows] = await conn.query(
+      'SELECT student_name, exam_number, pin, upload_date FROM results ORDER BY upload_date DESC LIMIT 20'
+    );
+    conn.release();
+
+    res.json({ success: true, data: rows });
+  } catch (error) {
+    console.error('DB Error:', error);
+    res.status(500).json({ success: false, message: 'Database error' });
   }
 });
 
@@ -102,6 +131,7 @@ app.post('/api/admin/upload', upload.single('file'), async (req, res) => {
 // 🎓 Student Verify
 app.post('/api/student/verify', async (req, res) => {
   const { examNumber, pin } = req.body;
+
   try {
     const conn = await pool.getConnection();
     const [rows] = await conn.query(
@@ -123,5 +153,5 @@ app.post('/api/student/verify', async (req, res) => {
 
 // ==================== SERVER START ====================
 app.listen(PORT, () => {
-  console.log(`Server listening on port ${PORT}`);
+  console.log(`✅ Server running on port ${PORT}`);
 });
