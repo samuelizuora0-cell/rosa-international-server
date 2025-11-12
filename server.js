@@ -14,35 +14,36 @@ if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR);
 
 const app = express();
 
-// ✅ Allow your InfinityFree frontend to connect to Render backend
+// ✅ Allow your InfinityFree site to connect
 app.use(cors({
-  origin: 'https://rosainternationalschool.kesug.com', // Your exact frontend URL
+  origin: 'https://rosainternationalschool.kesug.com', // exact frontend URL
   methods: ['GET', 'POST', 'PUT', 'DELETE'],
   credentials: true
 }));
 
-// ✅ Body parsing middleware
+// ✅ Middleware
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-// ✅ Session setup (important for login persistence)
+// ✅ Session setup (Render-safe)
+app.set('trust proxy', 1); // important for HTTPS cookies
 app.use(session({
   secret: process.env.SESSION_SECRET || 'change_this_secret',
   resave: false,
   saveUninitialized: false,
   cookie: {
     httpOnly: true,
-    secure: true,       // ✅ Render uses HTTPS
-    sameSite: 'none',   // ✅ Required for cross-domain cookie
+    secure: true,         // must be true on HTTPS (Render)
+    sameSite: 'none',     // allow cross-domain cookies
     maxAge: 1000 * 60 * 60 // 1 hour
   }
 }));
 
-// ✅ Serve uploaded files and static assets
+// ✅ Serve uploaded files & static folder
 app.use('/uploads', express.static(UPLOAD_DIR));
 app.use(express.static(path.join(__dirname, 'public')));
 
-// ✅ Database connection pool
+// ✅ Database connection
 const pool = mysql.createPool({
   host: process.env.DB_HOST,
   user: process.env.DB_USER,
@@ -53,7 +54,7 @@ const pool = mysql.createPool({
   connectionLimit: 10
 });
 
-// ✅ File upload configuration
+// ✅ File upload setup
 const storage = multer.diskStorage({
   destination: (req, file, cb) => cb(null, UPLOAD_DIR),
   filename: (req, file, cb) => {
@@ -69,7 +70,10 @@ const upload = multer({ storage });
 app.post('/api/admin/login', async (req, res) => {
   const { username, password } = req.body;
 
-  if (username === process.env.ADMIN_USER && password === process.env.ADMIN_PASS) {
+  if (
+    username === process.env.ADMIN_USER &&
+    password === process.env.ADMIN_PASS
+  ) {
     req.session.admin = true;
     return res.json({ success: true, message: 'Login successful' });
   } else {
@@ -80,31 +84,12 @@ app.post('/api/admin/login', async (req, res) => {
 // 🧑‍💻 Admin Logout
 app.post('/api/admin/logout', (req, res) => {
   req.session.destroy(() => {
-    res.json({ success: true, message: 'Logged out successfully' });
+    res.clearCookie('connect.sid', { path: '/' });
+    res.json({ success: true, message: 'Logged out' });
   });
 });
 
-// 🧾 Admin List Uploads
-app.get('/api/admin/list', async (req, res) => {
-  if (!req.session.admin) {
-    return res.status(403).json({ success: false, message: 'Unauthorized' });
-  }
-
-  try {
-    const conn = await pool.getConnection();
-    const [rows] = await conn.query(
-      'SELECT student_name, exam_number, pin, upload_date FROM results ORDER BY upload_date DESC LIMIT 20'
-    );
-    conn.release();
-
-    res.json({ success: true, data: rows });
-  } catch (error) {
-    console.error('DB Error:', error);
-    res.status(500).json({ success: false, message: 'Database error' });
-  }
-});
-
-// 🧑‍💻 Admin Upload Result
+// 🧾 Admin Upload Result
 app.post('/api/admin/upload', upload.single('file'), async (req, res) => {
   if (!req.session.admin) {
     return res.status(403).json({ success: false, message: 'Unauthorized' });
@@ -131,7 +116,6 @@ app.post('/api/admin/upload', upload.single('file'), async (req, res) => {
 // 🎓 Student Verify
 app.post('/api/student/verify', async (req, res) => {
   const { examNumber, pin } = req.body;
-
   try {
     const conn = await pool.getConnection();
     const [rows] = await conn.query(
@@ -151,7 +135,12 @@ app.post('/api/student/verify', async (req, res) => {
   }
 });
 
+// ✅ Catch-all (to prevent HTML being returned for JSON)
+app.use((req, res) => {
+  res.status(404).json({ success: false, message: 'Route not found' });
+});
+
 // ==================== SERVER START ====================
 app.listen(PORT, () => {
-  console.log(`✅ Server running on port ${PORT}`);
+  console.log(`✅ Server listening on port ${PORT}`);
 });
