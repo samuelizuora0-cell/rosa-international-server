@@ -13,6 +13,13 @@ const UPLOAD_DIR = path.resolve(__dirname, 'uploads');
 if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR);
 
 const app = express();
+// ✅ Allow your website to connect to this backend
+app.use(cors({
+  origin: '*', // allows all sites for now (testing)
+  methods: ['GET', 'POST', 'PUT', 'DELETE'],
+  credentials: true
+}));
+
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(session({
@@ -187,4 +194,5 @@ app.post('/admin/logout', (req, res) => {
 app.listen(PORT, () => {
   console.log('Server listening on port', PORT);
 });
+
 
