@@ -1,4 +1,5 @@
 require('dotenv').config();
+const cors = require('cors');
 const path = require('path');
 const fs = require('fs');
 const express = require('express');
@@ -186,3 +187,4 @@ app.post('/admin/logout', (req, res) => {
 app.listen(PORT, () => {
   console.log('Server listening on port', PORT);
 });
+
