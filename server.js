@@ -13,56 +13,91 @@ if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR);
 
 const app = express();
 
+// ✅ Allow your InfinityFree site to access the API
 app.use(cors({
-  origin: 'https://rosainternationalschool.kesug.com',
+  origin: 'https://rosainternationalschool.kesug.com', // Replace with your real InfinityFree URL
+  methods: ['GET', 'POST'],
   credentials: true
 }));
+
+// ✅ Middlewares
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
+// ✅ Session setup
 app.use(session({
-  secret: process.env.SESSION_SECRET || 'secret_key',
+  secret: process.env.SESSION_SECRET || 'rosa_international_secret',
   resave: false,
-  saveUninitialized: false
+  saveUninitialized: false,
+  cookie: { maxAge: 1000 * 60 * 60 } // 1 hour
 }));
 
-// ✅ Connect to Railway MySQL using DATABASE_URL
-const pool = mysql.createPool({
-  uri: process.env.DATABASE_URL,
-  waitForConnections: true,
-  connectionLimit: 10
-});
+// ✅ Serve uploaded files
+app.use('/uploads', express.static(UPLOAD_DIR));
+app.use(express.static(path.join(__dirname, 'public')));
 
+// ✅ Connect to MySQL via DATABASE_URL (from Railway)
+let pool;
+(async () => {
+  try {
+    pool = mysql.createPool(process.env.DATABASE_URL);
+    console.log("✅ Connected to MySQL Database");
+
+    // Create table if not exists
+    const createTableQuery = `
+      CREATE TABLE IF NOT EXISTS results (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        student_name VARCHAR(255) NOT NULL,
+        exam_number VARCHAR(100),
+        pin VARCHAR(100),
+        file_path VARCHAR(500),
+        upload_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `;
+    const conn = await pool.getConnection();
+    await conn.query(createTableQuery);
+    conn.release();
+    console.log("✅ 'results' table ready");
+  } catch (err) {
+    console.error("❌ Database connection failed:", err.message);
+  }
+})();
+
+// ✅ File upload setup
 const storage = multer.diskStorage({
   destination: (req, file, cb) => cb(null, UPLOAD_DIR),
   filename: (req, file, cb) => {
-    cb(null, Date.now() + '-' + file.originalname);
+    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1e9);
+    cb(null, uniqueSuffix + '-' + file.originalname);
   }
 });
 const upload = multer({ storage });
 
-// ===== ROUTES =====
+// ==================== ROUTES ====================
 
-// Admin login
-app.post('/api/admin/login', async (req, res) => {
+// 🧑‍💻 Admin Login
+app.post('/api/admin/login', (req, res) => {
   const { username, password } = req.body;
   if (
     username === process.env.ADMIN_USER &&
     password === process.env.ADMIN_PASS
   ) {
     req.session.admin = true;
-    return res.json({ success: true, message: 'Login successful' });
+    res.json({ success: true, message: 'Login successful' });
+  } else {
+    res.status(401).json({ success: false, message: 'Invalid credentials' });
   }
-  return res.status(401).json({ success: false, message: 'Invalid credentials' });
 });
 
-// Upload result
+// 🧑‍💻 Admin Upload Result
 app.post('/api/admin/upload', upload.single('file'), async (req, res) => {
-  if (!req.session.admin)
+  if (!req.session.admin) {
     return res.status(403).json({ success: false, message: 'Unauthorized' });
+  }
 
   const { student_name, exam_number, pin } = req.body;
   const filePath = `/uploads/${req.file.filename}`;
+
   try {
     const conn = await pool.getConnection();
     await conn.query(
@@ -70,16 +105,18 @@ app.post('/api/admin/upload', upload.single('file'), async (req, res) => {
       [student_name, exam_number, pin, filePath]
     );
     conn.release();
+
     res.json({ success: true, message: 'Result uploaded successfully' });
-  } catch (err) {
-    console.error('DB Error:', err);
+  } catch (error) {
+    console.error('❌ DB Error:', error);
     res.status(500).json({ success: false, message: 'Database error' });
   }
 });
 
-// Student verify
+// 🎓 Student Verify
 app.post('/api/student/verify', async (req, res) => {
   const { examNumber, pin } = req.body;
+
   try {
     const conn = await pool.getConnection();
     const [rows] = await conn.query(
@@ -87,12 +124,19 @@ app.post('/api/student/verify', async (req, res) => {
       [examNumber, pin]
     );
     conn.release();
-    if (rows.length) return res.json({ success: true, result: rows[0] });
-    res.status(404).json({ success: false, message: 'No result found' });
-  } catch (err) {
-    console.error('DB Error:', err);
+
+    if (rows.length > 0) {
+      res.json({ success: true, result: rows[0] });
+    } else {
+      res.status(404).json({ success: false, message: 'No result found' });
+    }
+  } catch (error) {
+    console.error('❌ DB Error:', error);
     res.status(500).json({ success: false, message: 'Database error' });
   }
 });
 
-app.listen(PORT, () => console.log(`✅ Server running on port ${PORT}`));
+// ==================== START SERVER ====================
+app.listen(PORT, () => {
+  console.log(`🚀 Server running on port ${PORT}`);
+});
