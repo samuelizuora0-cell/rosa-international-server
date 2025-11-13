@@ -34,7 +34,7 @@ app.use(
       'https://rosainternationalschool.kesug.com',
       'http://rosainternationalschool.kesug.com',
     ],
-    credentials: true,
+    credentials: true, // allow cookies
   })
 );
 
@@ -47,28 +47,16 @@ app.use(
     resave: false,
     saveUninitialized: false,
     cookie: {
-      secure: false,
+      secure: false, // true only if HTTPS with SSL
       httpOnly: true,
       sameSite: 'lax',
-      maxAge: 1000 * 60 * 60 * 2,
+      maxAge: 1000 * 60 * 60 * 2, // 2 hours
     },
   })
 );
 
 // ✅ Multer setup for uploads
 const upload = multer({ dest: 'uploads/' });
-
-// ✅ Ensure results table exists
-await pool.query(`
-  CREATE TABLE IF NOT EXISTS results (
-    id INT AUTO_INCREMENT PRIMARY KEY,
-    student_name VARCHAR(255),
-    exam_number VARCHAR(50),
-    pin VARCHAR(50),
-    file_path VARCHAR(255),
-    uploaded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-  )
-`);
 
 // ✅ Ensure admin table exists
 await pool.query(`
@@ -79,7 +67,7 @@ await pool.query(`
   )
 `);
 
-// ✅ Create default admin if not exists
+// ✅ Ensure default admin exists
 const [rows] = await pool.query('SELECT * FROM admins WHERE username = ?', ['admin']);
 if (rows.length === 0) {
   const hashed = await bcrypt.hash('20145067cq', 10);
@@ -87,7 +75,7 @@ if (rows.length === 0) {
   console.log('✅ Default admin created.');
 }
 
-// ✅ Admin Login
+// ✅ Login endpoint
 app.post('/login', async (req, res) => {
   const { username, password } = req.body;
   const [admins] = await pool.query('SELECT * FROM admins WHERE username = ?', [username]);
@@ -101,36 +89,28 @@ app.post('/login', async (req, res) => {
   res.json({ message: 'Login successful' });
 });
 
-// ✅ Logout
+// ✅ Logout endpoint
 app.post('/logout', (req, res) => {
   req.session.destroy(() => res.json({ message: 'Logged out successfully' }));
 });
 
-// ✅ Upload (🔓 UNPROTECTED)
+// ✅ Upload endpoint
 app.post('/upload', upload.single('file'), async (req, res) => {
-  try {
-    const { studentName, examNumber, pin } = req.body;
-    const file = req.file ? req.file.filename : null;
+  if (!req.session.admin) return res.status(401).json({ error: 'Unauthorized' });
 
-    await pool.query(
-      'INSERT INTO results (student_name, exam_number, pin, file_path) VALUES (?, ?, ?, ?)',
-      [studentName, examNumber, pin, file]
-    );
+  const { studentName, examNumber, pin } = req.body;
+  const file = req.file ? req.file.filename : null;
 
-    res.json({ message: '✅ Result uploaded successfully (no login required)' });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: 'Upload failed' });
-  }
+  await pool.query(
+    'INSERT INTO results (student_name, exam_number, pin, file_path) VALUES (?, ?, ?, ?)',
+    [studentName, examNumber, pin, file]
+  );
+
+  res.json({ message: 'Result uploaded successfully' });
 });
 
-// ✅ Serve uploaded files
+// ✅ Serve static files (uploads)
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
-// ✅ Server status
-app.get('/', (req, res) => {
-  res.send('✅ Rosa International Server is running.');
-});
-
-// ✅ Start Server
-app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
+// ✅ Start server
+app.listen(PORT, () => console.log(`✅ Server running on port ${PORT}`));
