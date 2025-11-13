@@ -16,8 +16,18 @@ const PORT = process.env.PORT || 10000;
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// ✅ MySQL Connection
-const pool = await mysql.createPool(process.env.MYSQL_URL);
+// ✅ Parse Railway MySQL URL manually
+const dbUrl = new URL(process.env.MYSQL_URL);
+const pool = await mysql.createPool({
+  host: dbUrl.hostname,
+  user: dbUrl.username,
+  password: dbUrl.password,
+  database: dbUrl.pathname.replace('/', ''),
+  port: dbUrl.port || 3306,
+  waitForConnections: true,
+  connectionLimit: 10,
+  queueLimit: 0,
+});
 
 // ✅ Session Store
 const MySQLSessionStore = MySQLStore(session);
@@ -34,7 +44,7 @@ app.use(
       'https://rosainternationalschool.kesug.com',
       'http://rosainternationalschool.kesug.com',
     ],
-    credentials: true, // allow cookies
+    credentials: true,
   })
 );
 
@@ -47,16 +57,28 @@ app.use(
     resave: false,
     saveUninitialized: false,
     cookie: {
-      secure: false, // true only if HTTPS with SSL
+      secure: false,
       httpOnly: true,
       sameSite: 'lax',
-      maxAge: 1000 * 60 * 60 * 2, // 2 hours
+      maxAge: 1000 * 60 * 60 * 2,
     },
   })
 );
 
 // ✅ Multer setup for uploads
 const upload = multer({ dest: 'uploads/' });
+
+// ✅ Ensure results table exists
+await pool.query(`
+  CREATE TABLE IF NOT EXISTS results (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    student_name VARCHAR(255),
+    exam_number VARCHAR(50),
+    pin VARCHAR(50),
+    file_path VARCHAR(255),
+    uploaded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+  )
+`);
 
 // ✅ Ensure admin table exists
 await pool.query(`
@@ -67,7 +89,7 @@ await pool.query(`
   )
 `);
 
-// ✅ Ensure default admin exists
+// ✅ Create default admin if not exists
 const [rows] = await pool.query('SELECT * FROM admins WHERE username = ?', ['admin']);
 if (rows.length === 0) {
   const hashed = await bcrypt.hash('20145067cq', 10);
@@ -75,7 +97,7 @@ if (rows.length === 0) {
   console.log('✅ Default admin created.');
 }
 
-// ✅ Login endpoint
+// ✅ Admin Login
 app.post('/login', async (req, res) => {
   const { username, password } = req.body;
   const [admins] = await pool.query('SELECT * FROM admins WHERE username = ?', [username]);
@@ -89,28 +111,34 @@ app.post('/login', async (req, res) => {
   res.json({ message: 'Login successful' });
 });
 
-// ✅ Logout endpoint
+// ✅ Logout
 app.post('/logout', (req, res) => {
   req.session.destroy(() => res.json({ message: 'Logged out successfully' }));
 });
 
-// ✅ Upload endpoint
+// ✅ Upload (🔓 UNPROTECTED)
 app.post('/upload', upload.single('file'), async (req, res) => {
-  if (!req.session.admin) return res.status(401).json({ error: 'Unauthorized' });
+  try {
+    const { studentName, examNumber, pin } = req.body;
+    const file = req.file ? req.file.filename : null;
 
-  const { studentName, examNumber, pin } = req.body;
-  const file = req.file ? req.file.filename : null;
+    await pool.query(
+      'INSERT INTO results (student_name, exam_number, pin, file_path) VALUES (?, ?, ?, ?)',
+      [studentName, examNumber, pin, file]
+    );
 
-  await pool.query(
-    'INSERT INTO results (student_name, exam_number, pin, file_path) VALUES (?, ?, ?, ?)',
-    [studentName, examNumber, pin, file]
-  );
-
-  res.json({ message: 'Result uploaded successfully' });
+    res.json({ message: '✅ Result uploaded successfully (no login required)' });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Upload failed' });
+  }
 });
 
-// ✅ Serve static files (uploads)
+// ✅ Serve uploaded files
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
-// ✅ Start server
-app.listen(PORT, () => console.log(`✅ Server running on port ${PORT}`));
+// ✅ Health check route
+app.get('/', (req, res) => res.send('✅ Rosa Server running and connected to MySQL'));
+
+// ✅ Start Server
+app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
