@@ -1,144 +1,150 @@
-import express from 'express';
-import session from 'express-session';
-import MySQLStore from 'express-mysql-session';
-import multer from 'multer';
-import cors from 'cors';
-import dotenv from 'dotenv';
-import bcrypt from 'bcryptjs';
-import mysql from 'mysql2/promise';
-import path from 'path';
-import { fileURLToPath } from 'url';
+import express from "express";
+import session from "express-session";
+import cors from "cors";
+import multer from "multer";
+import mysql from "mysql2/promise";
+import dotenv from "dotenv";
 
 dotenv.config();
+
 const app = express();
 const PORT = process.env.PORT || 10000;
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+// CORS setup for your frontend site
+app.use(cors({
+  origin: [
+    "https://rosainternationalschool.kesug.com",
+    "http://rosainternationalschool.kesug.com"
+  ],
+  credentials: true
+}));
 
-// ✅ Parse Railway MySQL URL manually
-const dbUrl = new URL(process.env.MYSQL_URL);
-const pool = await mysql.createPool({
-  host: dbUrl.hostname,
-  user: dbUrl.username,
-  password: dbUrl.password,
-  database: dbUrl.pathname.replace('/', ''),
-  port: dbUrl.port || 3306,
-  waitForConnections: true,
-  connectionLimit: 10,
-  queueLimit: 0,
-});
-
-// ✅ Session Store
-const MySQLSessionStore = MySQLStore(session);
-const sessionStore = new MySQLSessionStore({}, pool);
-
-// ✅ Middleware
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-// ✅ CORS Configuration
-app.use(
-  cors({
-    origin: [
-      'https://rosainternationalschool.kesug.com',
-      'http://rosainternationalschool.kesug.com',
-    ],
-    credentials: true,
-  })
-);
+// Basic session setup
+app.use(session({
+  secret: process.env.SESSION_SECRET || "rosa_secret",
+  resave: false,
+  saveUninitialized: true,
+  cookie: { secure: false }
+}));
 
-// ✅ Session Setup
-app.use(
-  session({
-    key: 'rosa_admin_session',
-    secret: process.env.SESSION_SECRET || 'rosaSecretKey',
-    store: sessionStore,
-    resave: false,
-    saveUninitialized: false,
-    cookie: {
-      secure: false,
-      httpOnly: true,
-      sameSite: 'lax',
-      maxAge: 1000 * 60 * 60 * 2,
-    },
-  })
-);
-
-// ✅ Multer setup for uploads
-const upload = multer({ dest: 'uploads/' });
-
-// ✅ Ensure results table exists
-await pool.query(`
-  CREATE TABLE IF NOT EXISTS results (
-    id INT AUTO_INCREMENT PRIMARY KEY,
-    student_name VARCHAR(255),
-    exam_number VARCHAR(50),
-    pin VARCHAR(50),
-    file_path VARCHAR(255),
-    uploaded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-  )
-`);
-
-// ✅ Ensure admin table exists
-await pool.query(`
-  CREATE TABLE IF NOT EXISTS admins (
-    id INT AUTO_INCREMENT PRIMARY KEY,
-    username VARCHAR(100) NOT NULL UNIQUE,
-    password VARCHAR(255) NOT NULL
-  )
-`);
-
-// ✅ Create default admin if not exists
-const [rows] = await pool.query('SELECT * FROM admins WHERE username = ?', ['admin']);
-if (rows.length === 0) {
-  const hashed = await bcrypt.hash('20145067cq', 10);
-  await pool.query('INSERT INTO admins (username, password) VALUES (?, ?)', ['admin', hashed]);
-  console.log('✅ Default admin created.');
-}
-
-// ✅ Admin Login
-app.post('/login', async (req, res) => {
-  const { username, password } = req.body;
-  const [admins] = await pool.query('SELECT * FROM admins WHERE username = ?', [username]);
-  if (admins.length === 0) return res.status(401).json({ error: 'Invalid credentials' });
-
-  const admin = admins[0];
-  const valid = await bcrypt.compare(password, admin.password);
-  if (!valid) return res.status(401).json({ error: 'Invalid credentials' });
-
-  req.session.admin = { id: admin.id, username: admin.username };
-  res.json({ message: 'Login successful' });
+// Create MySQL connection pool
+const pool = mysql.createPool({
+  host: process.env.DB_HOST,
+  user: process.env.DB_USER,
+  password: process.env.DB_PASS,
+  database: process.env.DB_NAME,
+  port: process.env.DB_PORT
 });
 
-// ✅ Logout
-app.post('/logout', (req, res) => {
-  req.session.destroy(() => res.json({ message: 'Logged out successfully' }));
-});
-
-// ✅ Upload (🔓 UNPROTECTED)
-app.post('/upload', upload.single('file'), async (req, res) => {
+// Ensure tables exist
+(async () => {
+  const conn = await pool.getConnection();
   try {
-    const { studentName, examNumber, pin } = req.body;
-    const file = req.file ? req.file.filename : null;
+    await conn.query(`
+      CREATE TABLE IF NOT EXISTS results (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        student_name VARCHAR(255) NOT NULL,
+        exam_number VARCHAR(255),
+        pin VARCHAR(50),
+        file_path VARCHAR(255),
+        upload_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+    await conn.query(`
+      CREATE TABLE IF NOT EXISTS admin (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        username VARCHAR(100) NOT NULL UNIQUE,
+        password VARCHAR(255) NOT NULL
+      )
+    `);
+    console.log("✅ Tables verified/created");
+  } catch (err) {
+    console.error("❌ Error creating tables:", err);
+  } finally {
+    conn.release();
+  }
+})();
 
-    await pool.query(
-      'INSERT INTO results (student_name, exam_number, pin, file_path) VALUES (?, ?, ?, ?)',
-      [studentName, examNumber, pin, file]
+// File storage config
+const storage = multer.diskStorage({
+  destination: "uploads/",
+  filename: (req, file, cb) => {
+    const unique = Date.now() + "_" + file.originalname;
+    cb(null, unique);
+  }
+});
+const upload = multer({ storage });
+
+// ---- ADMIN LOGIN ----
+app.post("/api/admin/login", async (req, res) => {
+  const { username, password } = req.body;
+  if (username === process.env.ADMIN_USER && password === process.env.ADMIN_PASS) {
+    req.session.admin = true;
+    return res.json({ success: true, message: "Login successful" });
+  }
+  return res.status(401).json({ success: false, message: "Unauthorized" });
+});
+
+// ---- ADMIN LOGOUT ----
+app.post("/api/admin/logout", (req, res) => {
+  req.session.destroy(() => {
+    res.json({ success: true });
+  });
+});
+
+// ---- UPLOAD RESULT (Unprotected for now to avoid Unauthorized) ----
+app.post("/api/admin/upload", upload.single("file"), async (req, res) => {
+  try {
+    const { student_name, exam_number, pin } = req.body;
+    const file_path = req.file ? req.file.filename : null;
+
+    if (!student_name || !file_path)
+      return res.status(400).json({ success: false, message: "Missing fields" });
+
+    const conn = await pool.getConnection();
+    await conn.query(
+      "INSERT INTO results (student_name, exam_number, pin, file_path) VALUES (?, ?, ?, ?)",
+      [student_name, exam_number, pin, file_path]
     );
+    conn.release();
 
-    res.json({ message: '✅ Result uploaded successfully (no login required)' });
+    res.json({ success: true, message: "Result uploaded successfully" });
   } catch (err) {
     console.error(err);
-    res.status(500).json({ error: 'Upload failed' });
+    res.status(500).json({ success: false, message: "Server error" });
   }
 });
 
-// ✅ Serve uploaded files
-app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
+// ---- LIST RESULTS ----
+app.get("/api/admin/list", async (req, res) => {
+  try {
+    const [rows] = await pool.query("SELECT * FROM results ORDER BY upload_date DESC LIMIT 20");
+    res.json({ success: true, data: rows });
+  } catch (err) {
+    res.status(500).json({ success: false, message: "Error fetching results" });
+  }
+});
 
-// ✅ Health check route
-app.get('/', (req, res) => res.send('✅ Rosa Server running and connected to MySQL'));
+// ---- CHECK RESULT ----
+app.post("/api/result/check", async (req, res) => {
+  const { exam_number, pin } = req.body;
+  try {
+    const [rows] = await pool.query(
+      "SELECT * FROM results WHERE exam_number = ? AND pin = ?",
+      [exam_number, pin]
+    );
+    if (rows.length === 0) return res.status(404).json({ success: false, message: "No result found" });
+    res.json({ success: true, result: rows[0] });
+  } catch (err) {
+    res.status(500).json({ success: false, message: "Server error" });
+  }
+});
 
-// ✅ Start Server
+app.get("/", (req, res) => {
+  res.send("✅ Rosa International School Server is running...");
+});
+
 app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
