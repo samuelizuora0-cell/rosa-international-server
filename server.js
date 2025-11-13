@@ -1,38 +1,42 @@
 require('dotenv').config();
-const cors = require('cors');
-const path = require('path');
-const fs = require('fs');
 const express = require('express');
 const mysql = require('mysql2/promise');
 const multer = require('multer');
 const session = require('express-session');
+const cors = require('cors');
+const fs = require('fs');
+const path = require('path');
 
 const app = express();
 const PORT = process.env.PORT || 10000;
+
+// ✅ Ensure uploads directory exists
 const UPLOAD_DIR = path.resolve(__dirname, 'uploads');
 if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR);
 
-// ✅ CORS: Allow your InfinityFree frontend
+// ✅ Allow your InfinityFree frontend
 app.use(cors({
-  origin: 'https://rosainternationalschool.kesug.com', // your InfinityFree URL
-  methods: ['GET', 'POST'],
-  credentials: true,
+  origin: 'https://rosainternationalschool.kesug.com',
+  methods: ['GET', 'POST', 'PUT', 'DELETE'],
+  credentials: true
 }));
 
-// ✅ Middleware
+// ✅ Parse JSON and form data
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
-app.use(session({
-  secret: process.env.SESSION_SECRET || 'rosa_international_secret',
-  resave: false,
-  saveUninitialized: false,
-  cookie: { maxAge: 3600000 } // 1 hour
-}));
 
-// ✅ Serve static files
+// ✅ Serve uploaded files
 app.use('/uploads', express.static(UPLOAD_DIR));
 
-// ✅ MySQL connection pool
+// ✅ Session setup
+app.use(session({
+  secret: process.env.SESSION_SECRET || 'rosa_international_secret_2025',
+  resave: false,
+  saveUninitialized: false,
+  cookie: { maxAge: 60 * 60 * 1000 }
+}));
+
+// ✅ Database Connection
 let pool;
 (async () => {
   try {
@@ -43,42 +47,32 @@ let pool;
       database: process.env.DB_NAME || 'railway',
       port: process.env.DB_PORT || 37027,
       waitForConnections: true,
-      connectionLimit: 10,
-      queueLimit: 0,
+      connectionLimit: 10
     });
 
-    console.log('✅ Connected to MySQL Database');
-
-    // 🛠️ Auto-create tables
-    const conn = await pool.getConnection();
-    await conn.query(`
+    // ✅ Auto create table if it doesn’t exist
+    const createTableSQL = `
       CREATE TABLE IF NOT EXISTS results (
         id INT AUTO_INCREMENT PRIMARY KEY,
         student_name VARCHAR(255) NOT NULL,
-        exam_number VARCHAR(100),
-        pin VARCHAR(100),
-        file_path VARCHAR(500),
-        upload_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-      )
-    `);
-
-    await conn.query(`
-      CREATE TABLE IF NOT EXISTS access_logs (
-        id INT AUTO_INCREMENT PRIMARY KEY,
-        action VARCHAR(255),
-        ip_address VARCHAR(255),
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-      )
-    `);
-
+        exam_number VARCHAR(100) NOT NULL,
+        pin VARCHAR(50) NOT NULL,
+        file_path VARCHAR(255),
+        upload_date DATETIME DEFAULT CURRENT_TIMESTAMP
+      );
+    `;
+    const conn = await pool.getConnection();
+    await conn.query(createTableSQL);
     conn.release();
-    console.log('✅ Tables verified/created');
-  } catch (error) {
-    console.error('❌ Database connection failed:', error.message);
+
+    console.log('✅ Connected to MySQL Database');
+    console.log('✅ "results" table verified/created');
+  } catch (err) {
+    console.error('❌ Database connection failed:', err.message);
   }
 })();
 
-// ✅ File upload setup
+// ✅ File Upload Setup
 const storage = multer.diskStorage({
   destination: (req, file, cb) => cb(null, UPLOAD_DIR),
   filename: (req, file, cb) => {
@@ -88,17 +82,23 @@ const storage = multer.diskStorage({
 });
 const upload = multer({ storage });
 
-// ✅ Admin login
+// ================= ROUTES =================
+
+// 🧑‍💻 Admin Login
 app.post('/api/admin/login', (req, res) => {
   const { username, password } = req.body;
-  if (username === process.env.ADMIN_USER && password === process.env.ADMIN_PASS) {
+
+  if (
+    username === process.env.ADMIN_USER &&
+    password === process.env.ADMIN_PASS
+  ) {
     req.session.admin = true;
     return res.json({ success: true, message: 'Login successful' });
   }
-  res.status(401).json({ success: false, message: 'Invalid credentials' });
+  return res.status(401).json({ success: false, message: 'Invalid credentials' });
 });
 
-// ✅ Admin upload result
+// 🧑‍💻 Admin Upload Result
 app.post('/api/admin/upload', upload.single('file'), async (req, res) => {
   if (!req.session.admin) {
     return res.status(403).json({ success: false, message: 'Unauthorized' });
@@ -114,33 +114,18 @@ app.post('/api/admin/upload', upload.single('file'), async (req, res) => {
       [student_name, exam_number, pin, filePath]
     );
     conn.release();
+
     res.json({ success: true, message: 'Result uploaded successfully' });
-  } catch (error) {
-    console.error('DB Error:', error);
+  } catch (err) {
+    console.error('DB Error:', err);
     res.status(500).json({ success: false, message: 'Database error' });
   }
 });
 
-// ✅ List results
-app.get('/api/admin/list', async (req, res) => {
-  if (!req.session.admin) {
-    return res.status(403).json({ success: false, message: 'Unauthorized' });
-  }
-
-  try {
-    const conn = await pool.getConnection();
-    const [rows] = await conn.query('SELECT * FROM results ORDER BY upload_date DESC LIMIT 20');
-    conn.release();
-    res.json({ success: true, data: rows });
-  } catch (error) {
-    console.error('DB Error:', error);
-    res.status(500).json({ success: false, message: 'Database error' });
-  }
-});
-
-// ✅ Student verify
+// 🎓 Student Verify
 app.post('/api/student/verify', async (req, res) => {
   const { examNumber, pin } = req.body;
+
   try {
     const conn = await pool.getConnection();
     const [rows] = await conn.query(
@@ -154,19 +139,19 @@ app.post('/api/student/verify', async (req, res) => {
     } else {
       res.status(404).json({ success: false, message: 'No result found' });
     }
-  } catch (error) {
-    console.error('DB Error:', error);
+  } catch (err) {
+    console.error('DB Error:', err);
     res.status(500).json({ success: false, message: 'Database error' });
   }
 });
 
-// ✅ Logout
-app.post('/api/admin/logout', (req, res) => {
-  req.session.destroy();
-  res.json({ success: true, message: 'Logged out' });
+// ✅ Default route
+app.get('/', (req, res) => {
+  res.send('Rosa International School API is running 🚀');
 });
 
-// ✅ Start server
+// ================= START SERVER =================
 app.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
+  console.log('🌍 Your service is live 🎉');
 });
